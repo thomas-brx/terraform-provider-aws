@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -39,10 +41,21 @@ func resourceAwsEcsTaskDefinition() *schema.Resource {
 
 			"container_definitions": {
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 				ForceNew: true,
 				StateFunc: func(v interface{}) string {
 					hash := sha1.Sum([]byte(v.(string)))
+					return hex.EncodeToString(hash[:])
+				},
+				ValidateFunc: validateAwsEcsTaskDefinitionContainerDefinitions,
+			},
+
+			"container_definitions_ignore_tags": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				StateFunc: func(v interface{}) string {
+					hash := sha1.Sum([]byte(stripImageTags(v.(string))))
 					return hex.EncodeToString(hash[:])
 				},
 				ValidateFunc: validateAwsEcsTaskDefinitionContainerDefinitions,
@@ -122,6 +135,19 @@ func validateAwsEcsTaskDefinitionNetworkMode(v interface{}, k string) (ws []stri
 	return
 }
 
+func stripImageTags(v string) string {
+	containerDefinitions, err := expandEcsContainerDefinitions(v)
+	if err != nil {
+		panic(err)
+	}
+	re := regexp.MustCompile(":([^:]*)$")
+	for _, c := range containerDefinitions {
+		*c.Image = re.ReplaceAllString(*c.Image, "")
+	}
+	normalized, _ := json.Marshal(containerDefinitions)
+	return string(normalized)
+}
+
 func validateAwsEcsTaskDefinitionContainerDefinitions(v interface{}, k string) (ws []string, errors []error) {
 	value := v.(string)
 	_, err := expandEcsContainerDefinitions(value)
@@ -134,7 +160,14 @@ func validateAwsEcsTaskDefinitionContainerDefinitions(v interface{}, k string) (
 func resourceAwsEcsTaskDefinitionCreate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ecsconn
 
-	rawDefinitions := d.Get("container_definitions").(string)
+	var rawDefinitions string
+
+	if v, ok := d.GetOk("container_definitions"); ok {
+		rawDefinitions = v.(string)
+	} else {
+		rawDefinitions = d.Get("container_definitions_ignore_tags").(string)
+	}
+
 	definitions, err := expandEcsContainerDefinitions(rawDefinitions)
 	if err != nil {
 		return err
